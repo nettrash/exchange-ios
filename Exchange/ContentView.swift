@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var decrypting = false
     @State private var addingRecipient = false
     @State private var showingMyQR = false
+    @State private var showingSettings = false
 
     /// How long the splash stays up at minimum, regardless of how fast
     /// identity loading completes. Picked to give the rotating arc a
@@ -91,6 +92,14 @@ struct ContentView: View {
             }
             .navigationTitle("Exchange")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         decrypting = true
@@ -126,6 +135,12 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingMyQR) {
                 MyIdentityQRView(identity: identity)
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(
+                    identityFingerprint: identity.fingerprint.groupedHex,
+                    onResetIdentity: { Task { await resetIdentity() } }
+                )
             }
         }
     }
@@ -186,6 +201,27 @@ struct ContentView: View {
         for index in offsets {
             modelContext.delete(recipients[index])
         }
+    }
+
+    /// Wipe the keychain identity and all recipients, then re-trigger
+    /// identity loading so a fresh keypair is generated and the user
+    /// returns to the splash → main flow without restarting the app.
+    private func resetIdentity() async {
+        // Drop the local handle first so the splash takes over the body
+        // immediately while the wipe runs.
+        identity = nil
+        identityErrorMessage = nil
+        do {
+            try IdentityStore.reset()
+        } catch {
+            identityErrorMessage = "Couldn't reset identity: \(error.localizedDescription)"
+            return
+        }
+        for recipient in recipients {
+            modelContext.delete(recipient)
+        }
+        try? modelContext.save()
+        await loadIdentity()
     }
 }
 

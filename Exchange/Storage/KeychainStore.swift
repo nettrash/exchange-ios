@@ -7,9 +7,9 @@
 //
 //  All items are stored with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
 //  so they survive lock-screen access by background tasks but never leave
-//  the device via iCloud / device migration. (Migration between devices
-//  is handled at a higher level by exporting an explicit, passphrase-encrypted
-//  backup blob, never by Keychain sync.)
+//  the device via iCloud Keychain sync. Identity does not migrate to a new
+//  device — restoring from backup gives you the recipient list back, but
+//  the new device generates a fresh identity on first launch.
 //
 
 import Foundation
