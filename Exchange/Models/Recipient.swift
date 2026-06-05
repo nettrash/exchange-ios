@@ -36,10 +36,26 @@ final class Recipient {
 
     var createdAt: Date
 
+    /// User-defined position in the recipient list (manual drag-to-reorder).
+    /// Lower sorts first; ties are broken by `createdAt` descending so the
+    /// pre-reorder default stays "newest first". Added in v1.2 with a
+    /// default of 0 so SwiftData lightweight migration leaves existing
+    /// rows tied (and therefore in their previous order).
+    var orderIndex: Int = 0
+
+    /// Last time the user edited this recipient's display label or its
+    /// position. Used by the iCloud-Keychain sync merge to resolve
+    /// rename/reorder conflicts (latest write wins). Optional so that
+    /// rows migrated from a pre-v1.2 store decode as `nil`; callers treat
+    /// `nil` as `createdAt` (see `effectiveUpdatedAt`).
+    var updatedAt: Date?
+
     init(displayName: String,
          publicBundle: Identity.PublicBundle,
          notes: String = "",
-         createdAt: Date = .now) {
+         createdAt: Date = .now,
+         orderIndex: Int = 0,
+         updatedAt: Date? = nil) {
         self.id = UUID()
         self.displayName = displayName
         self.encryptionPublicKeyData = publicBundle.encryptionPublicKey.rawRepresentation
@@ -47,6 +63,11 @@ final class Recipient {
         self.fingerprintData = Identity.fingerprint(of: publicBundle)
         self.notes = notes
         self.createdAt = createdAt
+        self.orderIndex = orderIndex
+        // A freshly-created row's "last edited" time is its creation time
+        // unless the caller overrides it (e.g. the sync merge preserving a
+        // remote timestamp).
+        self.updatedAt = updatedAt ?? createdAt
     }
 }
 
@@ -77,4 +98,8 @@ extension Recipient {
 
     /// Display-friendly identity fingerprint, e.g. "a1b2-c3d4-e5f6-0708".
     var fingerprintDisplay: String { fingerprintData.groupedHex }
+
+    /// `updatedAt`, falling back to `createdAt` for rows migrated from a
+    /// store written before the field existed.
+    var effectiveUpdatedAt: Date { updatedAt ?? createdAt }
 }

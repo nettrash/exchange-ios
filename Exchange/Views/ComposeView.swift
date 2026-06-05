@@ -115,27 +115,51 @@ struct ComposeView: View {
 
     @ViewBuilder
     private func resultView(envelope: String) -> some View {
+        // Wrap the envelope in its URL form so Copy and Share hand off
+        // a real `https://exchange.nettrash.me/msg?...` link. That's what
+        // makes iMessage (and Telegram, Slack, etc.) render a rich
+        // 🔒 Encrypted message preview bubble instead of a wall of
+        // base64. The URL is also what Universal Links resolves on the
+        // recipient side to open Exchange directly.
+        //
+        // `EnvelopeURL.url(for:)` only returns nil for input that
+        // doesn't start with `EXC2:`, which CryptoEnvelope.seal never
+        // produces — so the fallback to the raw envelope is purely
+        // defensive.
+        let url = EnvelopeURL.url(for: envelope)
+        let shareableString = url?.absoluteString ?? envelope
+
         Form {
             Section {
-                Text(envelope)
+                Text(shareableString)
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .lineLimit(nil)
             } header: {
-                Text("Encrypted envelope")
+                Text(url == nil ? "Encrypted envelope" : "Encrypted message link")
             } footer: {
-                Text("Send this through any messenger — iMessage, Mail, Telegram, WhatsApp. Only \(selectedRecipient?.displayName ?? "the recipient") can read it, and they can verify it came from you.")
+                Text("Send this through any messenger — iMessage, Mail, Telegram, WhatsApp. Only \(selectedRecipient?.displayName ?? "the recipient") can read it, and they can verify it came from you. In iMessage it shows up as a 🔒 Encrypted message preview; tapping it opens Exchange and decrypts in place.")
             }
 
             Section {
                 Button {
-                    UIPasteboard.general.string = envelope
+                    UIPasteboard.general.string = shareableString
                 } label: {
                     Label("Copy to clipboard", systemImage: "doc.on.doc")
                 }
 
-                ShareLink(item: envelope) {
-                    Label("Share…", systemImage: "square.and.arrow.up")
+                // Share as a URL value (not a String) — that's the
+                // signal the share sheet uses to route into the
+                // link-preview path inside Messages. Sharing the same
+                // text as a String drops it as a plain-text bubble.
+                if let url {
+                    ShareLink(item: url) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                } else {
+                    ShareLink(item: envelope) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
 

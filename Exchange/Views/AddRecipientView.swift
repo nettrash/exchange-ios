@@ -121,10 +121,15 @@ struct AddRecipientView: View {
             errorMessage = "A recipient with this key already exists."
             return
         }
+        // New recipients sit at the top of the manual order (one below the
+        // current minimum), preserving the historical "newest first"
+        // default until the user drags things around.
+        let topOrderIndex = (existingRecipients.map(\.orderIndex).min() ?? 0) - 1
         let recipient = Recipient(
             displayName: trimmedName,
             publicBundle: publicBundle,
-            notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+            notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
+            orderIndex: topOrderIndex
         )
         modelContext.insert(recipient)
         dismiss()

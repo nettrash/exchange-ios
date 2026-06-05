@@ -16,30 +16,60 @@ struct ExchangeApp: App {
     /// crashing on a `fatalError` if (e.g.) the on-disk store is corrupt.
     private let containerResult: Result<ModelContainer, Error>
 
+    /// Recipient-list sync coordinator. Long-lived for the app's
+    /// lifetime; surfaced through the SwiftUI Environment so views can
+    /// read its state and flip the Settings toggle. Nil only if the
+    /// SwiftData container failed to construct, in which case the app
+    /// shows ContainerLoadErrorView and never reaches the bound state.
+    private let recipientsSync: RecipientsSyncCoordinator?
+
+    /// Cross-view signal bus. Today it carries the pending envelope from
+    /// a Universal Link tap; future global app state can live here too.
+    @State private var appState = AppState()
+
     init() {
         let schema = Schema([Recipient.self])
         // The SwiftData store lives inside the shared App Group container
-        // so the iMessage extension can open the same store and pick from
-        // the same recipient list. CloudKit stays explicitly off — the
-        // recipient list survives a device-to-device restore via standard
-        // iOS backup; nothing is ever pushed to iCloud directly.
+        // so the iMessage extension can open the same store. CloudKit
+        // remains explicitly off on the SwiftData side — recipient sync
+        // (added in v1.1) goes through an end-to-end-encrypted blob
+        // stored in iCloud Keychain, not through CloudKit's private
+        // database. See RecipientsSync.swift for the threat model.
         let modelConfiguration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
             groupContainer: .identifier(AppConstants.appGroupIdentifier),
             cloudKitDatabase: .none
         )
-        containerResult = Result {
+        let result = Result {
             try ModelContainer(for: schema, configurations: [modelConfiguration])
         }
+        self.containerResult = result
+        self.recipientsSync = (try? result.get())
+            .map { RecipientsSyncCoordinator(modelContainer: $0) }
     }
 
     var body: some Scene {
         WindowGroup {
             switch containerResult {
             case .success(let container):
-                ContentView()
-                    .modelContainer(container)
+                if let recipientsSync {
+                    ContentView()
+                        .modelContainer(container)
+                        .environment(appState)
+                        .environment(recipientsSync)
+                        .onOpenURL { url in
+                            // Universal Link arrived (e.g. Exchange bubble
+                            // tapped in Messages.app on Mac, or any other
+                            // app surfacing our exchange.nettrash.me/msg
+                            // URL). Extract the envelope and stash it for
+                            // ContentView to pick up; ContentView auto-
+                            // presents DecryptView pre-filled.
+                            if let envelope = EnvelopeURL.extract(from: url) {
+                                appState.pendingDecryptEnvelope = envelope
+                            }
+                        }
+                }
             case .failure(let error):
                 ContainerLoadErrorView(error: error)
             }

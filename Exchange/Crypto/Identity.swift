@@ -118,24 +118,58 @@ nonisolated struct Identity {
 }
 
 /// Persistence boundary for `Identity`. Backed by Keychain.
+///
+/// As of v1.1 the identity private keys default to **iCloud-Keychain
+/// synchronised** storage so that the same identity flows across the
+/// user's devices on the same Apple ID (iPhone ↔ Mac Catalyst, and
+/// across device replacement). v1.0 wrote everything as ThisDeviceOnly;
+/// `loadOrCreate` auto-migrates that legacy entry to the synchronised
+/// mode on first launch under v1.1.
+///
+/// Users who want the original v1.0 forward-secrecy guarantee can flip
+/// the toggle in Settings, which calls `setSyncEnabled(false)` and
+/// migrates the entry back to `.deviceOnly`. Either way, the keys
+/// never leave the user's devices in plaintext — iCloud Keychain is
+/// itself end-to-end encrypted with a device-class secret.
 nonisolated enum IdentityStore {
     /// Keychain account under which the 64-byte combined private-key blob
     /// is stored. Versioned so a future format change doesn't collide
     /// with existing data.
     static let account = "identity.private-keys.v2"
 
-    /// Return the existing identity, or generate + persist a new one if absent.
+    /// Storage mode used when *creating* a fresh identity (i.e. no
+    /// existing entry on this device or in iCloud Keychain). v1.1
+    /// chooses `.syncing` so multi-device users get the smooth flow
+    /// without having to know that an iCloud-Keychain toggle exists.
+    static let defaultStorageMode: KeychainStore.StorageMode = .syncing
+
+    // MARK: - Public load / create
+
+    /// Return the existing identity, generating + persisting a new one
+    /// if absent. Implicitly upgrades a v1.0 ThisDeviceOnly entry to the
+    /// v1.1 default by writing a new synchronised entry and deleting the
+    /// old one — so users who had Exchange installed before v1.1 silently
+    /// gain iCloud Keychain sync without any prompt or surprise.
     nonisolated static func loadOrCreate() throws -> Identity {
         if let existing = try load() {
+            // Auto-migration: a v1.0 install would only have a
+            // .deviceOnly entry. Promote it to .syncing so the user
+            // gets the v1.1 default. They can opt back out via
+            // Settings if they prefer the old guarantee.
+            if try KeychainStore.currentMode(account: account) == .deviceOnly {
+                try KeychainStore.migrate(account: account, to: .syncing)
+            }
             return existing
         }
         let encryption = Curve25519.KeyAgreement.PrivateKey()
         let signing = Curve25519.Signing.PrivateKey()
-        try persist(encryption: encryption, signing: signing)
+        try persist(encryption: encryption, signing: signing, mode: defaultStorageMode)
         return Identity(encryptionPrivateKey: encryption, signingPrivateKey: signing)
     }
 
-    /// Return the existing identity, or `nil` if no identity has been generated yet.
+    /// Return the existing identity, or `nil` if no identity has been
+    /// generated yet. Reads from either storage mode — useful in early
+    /// boot before we've decided what mode the user wants going forward.
     nonisolated static func load() throws -> Identity? {
         guard let data = try KeychainStore.get(account: account) else { return nil }
         guard data.count == 64 else { throw Identity.IdentityError.malformedPrivateKey }
@@ -148,27 +182,57 @@ nonisolated enum IdentityStore {
         return Identity(encryptionPrivateKey: encryption, signingPrivateKey: signing)
     }
 
-    /// Replace the stored identity with the supplied keys. Used by import flow.
+    /// Replace the stored identity with the supplied keys. Used by the
+    /// import / restore / QR-receive flows. Preserves whatever storage
+    /// mode is currently active (so a user who's turned sync off doesn't
+    /// have it silently turned back on by performing a restore).
     @discardableResult
     nonisolated static func replace(
         encryption: Curve25519.KeyAgreement.PrivateKey,
         signing: Curve25519.Signing.PrivateKey
     ) throws -> Identity {
-        try persist(encryption: encryption, signing: signing)
+        let mode = try KeychainStore.currentMode(account: account) ?? defaultStorageMode
+        try persist(encryption: encryption, signing: signing, mode: mode)
         return Identity(encryptionPrivateKey: encryption, signingPrivateKey: signing)
     }
 
     /// Wipe the identity from Keychain. Irreversible — every envelope ever
-    /// addressed to the old key becomes unreadable.
+    /// addressed to the old key becomes unreadable. Removes both
+    /// synchronised and device-only variants, in case the user toggled
+    /// modes in the past and a stale entry of the other type lingers.
     nonisolated static func reset() throws {
         try KeychainStore.delete(account: account)
     }
 
+    // MARK: - Sync toggle
+
+    /// Whether the identity is currently stored in iCloud-Keychain-
+    /// synchronised mode. Returns the v1.1 default when the keychain is
+    /// empty (so the Settings toggle reflects what *would* happen for
+    /// the next identity generated).
+    nonisolated static func isSyncEnabled() throws -> Bool {
+        let mode = try KeychainStore.currentMode(account: account)
+            ?? defaultStorageMode
+        return mode == .syncing
+    }
+
+    /// Switch the identity Keychain entry between synchronised and
+    /// device-only storage. No-op if no identity exists yet — the next
+    /// `loadOrCreate` will pick up `defaultStorageMode`. The migration
+    /// is silent and reversible; the same 64 bytes survive the move.
+    nonisolated static func setSyncEnabled(_ enabled: Bool) throws {
+        let target: KeychainStore.StorageMode = enabled ? .syncing : .deviceOnly
+        try KeychainStore.migrate(account: account, to: target)
+    }
+
+    // MARK: - Internals
+
     private nonisolated static func persist(
         encryption: Curve25519.KeyAgreement.PrivateKey,
-        signing: Curve25519.Signing.PrivateKey
+        signing: Curve25519.Signing.PrivateKey,
+        mode: KeychainStore.StorageMode
     ) throws {
         let blob = encryption.rawRepresentation + signing.rawRepresentation
-        try KeychainStore.set(blob, account: account)
+        try KeychainStore.set(blob, account: account, mode: mode)
     }
 }

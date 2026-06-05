@@ -48,7 +48,7 @@ Type your message in Exchange, encrypt it to a recipient whose public key you've
 Or use the built-in iMessage extension and the encrypt-and-send flow happens inside iMessage itself. Tap Exchange in the iMessage app drawer, pick a contact, type, hit Encrypt, hit Send. The recipient taps the encrypted bubble in their thread, your extension decrypts it inline, and the plaintext appears with your name above it. No copy-paste, no app switching, no leaving the conversation.
 
 EVERYTHING ON YOUR DEVICE
-Exchange has no servers. No backend, no accounts, no telemetry, no analytics, no tracking. Your private keys are generated the first time you open the app and are stored in your iOS Keychain with the strictest "this device only" accessibility flag — they cannot be synced via iCloud Keychain or transferred to another device. The cryptographic operations all run locally using Apple's CryptoKit framework.
+Exchange has no servers. No backend, no accounts, no telemetry, no analytics, no tracking. Your private keys are generated the first time you open the app and are stored in your iOS Keychain. By default the identity is synced via Apple's end-to-end-encrypted iCloud Keychain so the same keys flow between your iPhone and Mac on the same Apple ID — toggle that off in Settings to pin them to one device. You can also export the identity as a passphrase-encrypted blob, or transfer it in person via QR. The cryptographic operations all run locally using Apple's CryptoKit framework.
 
 PROVEN ALGORITHMS
 Exchange uses standard, publicly-vetted cryptography:
@@ -65,7 +65,7 @@ Two people meet in person — at the office, at a cafe, at a conference. One tap
 WHAT EXCHANGE IS NOT
 Exchange isn't a chat app. It doesn't have group chats, voice calls, or read receipts. It's a tool you use with whatever transport you prefer.
 
-It isn't a key recovery service. If you lose your device, your identity is gone — that's the design. A new device gets a new identity, and you re-publish your public key to your contacts.
+It isn't a key recovery service. If you lose all your devices and don't have iCloud Keychain sync turned on (or you turned it off), your identity is gone. With iCloud Keychain sync enabled (the default in 1.1), your other devices on the same Apple ID still hold the same identity. There is no developer-side recovery, no master key, no back door.
 
 It isn't a server-trust system. There's no central directory of users. You decide who your contacts are, in person or through whatever channel you trust.
 
@@ -90,6 +90,21 @@ This is the first release of Exchange. Generate an identity, save recipients via
 Includes the iMessage extension for seamless in-conversation encryption.
 ```
 
+For v1.1:
+
+```
+Mac Catalyst, multi-device identity and recipients, smoother taps.
+
+• Mac Catalyst: Exchange now runs as a native Mac app. The recipient list and the decrypt flow are shared with the iPhone version.
+• Universal Links: tap a 🔒 Encrypted message bubble in iMessage on Mac or iPhone and Exchange opens directly to the decrypted plaintext — no more copy-paste round trip.
+• Encrypted-message links sent from the Compose flow now appear as rich preview bubbles (icon + "🔒 Encrypted message" caption) in iMessage and other messengers, instead of plain base64.
+• Identity sync: by default your identity is now carried across your iPhone and Mac via end-to-end-encrypted iCloud Keychain. Toggle off in Settings → Identity sync if you prefer the v1.0 device-only behaviour.
+• Recipients sync: the saved recipient list also syncs between your devices, encrypted on-device with a key derived from your identity. Apple sees only opaque ciphertext.
+• Backup & transfer: Settings → Backup & transfer adds passphrase-encrypted Export / Import (paste-friendly) and one-shot Send / Receive via QR (in-person between two of your own devices).
+• Smoother launch from a tapped link — the splash transitions straight to the decrypted message, with no home-screen flash in between.
+• Auto-detects encrypted envelopes already on your clipboard when you open Decrypt.
+```
+
 For future updates, keep these short and concrete: "Fixed [bug]. Added [small thing]. Improved [thing]."
 
 ## App Information
@@ -104,7 +119,7 @@ For future updates, keep these short and concrete: "Fixed [bug]. Added [small th
 ## Privacy Policy URL
 
 ```
-https://exchange.nettrash.me/privacy
+https://nettrash.me/appstore/exchange/privacy.html
 ```
 
 (Update this once the policy is hosted; must serve the markdown rendered as a public webpage.)
@@ -112,7 +127,7 @@ https://exchange.nettrash.me/privacy
 ## Support URL
 
 ```
-https://exchange.nettrash.me/support
+https://nettrash.me/appstore/exchange/support.html
 ```
 
 (Can point to a single static page or a GitHub issues URL.)
@@ -120,7 +135,7 @@ https://exchange.nettrash.me/support
 ## Marketing URL (optional)
 
 ```
-https://exchange.nettrash.me
+https://nettrash.me
 ```
 
 ## Encryption / Export Compliance

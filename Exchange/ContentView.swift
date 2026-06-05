@@ -15,7 +15,15 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\Recipient.createdAt, order: .reverse)])
+    @Environment(AppState.self) private var appState
+    @Environment(RecipientsSyncCoordinator.self) private var recipientsSync
+    // Manual order first (drag-to-reorder), then newest-first as the
+    // tie-break so rows that have never been reordered keep their old
+    // ordering.
+    @Query(sort: [
+        SortDescriptor(\Recipient.orderIndex, order: .forward),
+        SortDescriptor(\Recipient.createdAt, order: .reverse),
+    ])
     private var recipients: [Recipient]
 
     @State private var identity: Identity?
@@ -32,6 +40,9 @@ struct ContentView: View {
     @State private var addingRecipient = false
     @State private var showingMyQR = false
     @State private var showingSettings = false
+    /// The recipient currently being renamed, if any. Drives the
+    /// EditRecipientView sheet.
+    @State private var recipientToEdit: Recipient?
 
     /// How long the splash stays up at minimum, regardless of how fast
     /// identity loading completes. Picked to give the rotating arc a
@@ -40,8 +51,35 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let identity, minimumSplashElapsed {
-                mainContent(identity: identity)
+            if let identity {
+                if let envelope = appState.pendingDecryptEnvelope {
+                    // Universal-Link launch (or a URL arriving while
+                    // the app was in the background): render DecryptView
+                    // as the *root* content rather than a sheet over
+                    // mainContent. This skips the home-screen flash and
+                    // the sheet animate-in, so the path from the splash
+                    // to "decrypted message" is splash → DecryptView with
+                    // a single fade transition. Done clears the pending
+                    // envelope and SwiftUI re-renders mainContent.
+                    DecryptView(
+                        prefilledEnvelope: envelope,
+                        onDone: { appState.pendingDecryptEnvelope = nil }
+                    )
+                    // Bind the view's identity to the envelope so a new
+                    // URL arriving while DecryptView is already up causes
+                    // SwiftUI to recreate it (and re-run its .task) for
+                    // the new payload, instead of holding the stale one.
+                    .id(envelope)
+                    .transition(.opacity)
+                } else if minimumSplashElapsed {
+                    mainContent(identity: identity)
+                        .transition(.opacity)
+                } else {
+                    splashView(
+                        message: "Setting up your secure identity…",
+                        showsProgress: true
+                    )
+                }
             } else if let identityErrorMessage {
                 splashView(
                     message: identityErrorMessage,
@@ -54,13 +92,24 @@ struct ContentView: View {
                 )
             }
         }
+        .animation(.easeInOut(duration: 0.25),
+                   value: appState.pendingDecryptEnvelope)
         .task {
             // Run identity loading and the minimum splash delay in parallel;
             // we only fall through once whichever finishes last is done.
+            //
+            // Exception: if the app was launched (or resumed) by a
+            // Universal Link, skip the artificial splash hold — the user
+            // wants to see the decrypted message as fast as possible,
+            // not wait for the splash to finish its breath cycle.
             async let identityWork: Void = loadIdentity()
-            async let minimumDelay: Void = Task.sleep(for: minimumSplashDuration)
-            await identityWork
-            try? await minimumDelay
+            if appState.pendingDecryptEnvelope == nil {
+                async let minimumDelay: Void = Task.sleep(for: minimumSplashDuration)
+                await identityWork
+                try? await minimumDelay
+            } else {
+                await identityWork
+            }
             minimumSplashElapsed = true
         }
     }
@@ -85,8 +134,23 @@ struct ContentView: View {
                     } else {
                         ForEach(recipients) { recipient in
                             RecipientRow(recipient: recipient)
+                                .contentShape(Rectangle())
+                                .onTapGesture { recipientToEdit = recipient }
+                                .contextMenu {
+                                    Button {
+                                        recipientToEdit = recipient
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                    Button(role: .destructive) {
+                                        modelContext.delete(recipient)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                         }
                         .onDelete(perform: deleteRecipients)
+                        .onMove(perform: moveRecipients)
                     }
                 }
             }
@@ -97,6 +161,14 @@ struct ContentView: View {
                         showingSettings = true
                     } label: {
                         Label("Settings", systemImage: "gearshape")
+                    }
+                }
+
+                // Enter edit mode to drag-reorder recipients (drag handles
+                // appear) and to delete. Only useful once there's a list.
+                if !recipients.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        EditButton()
                     }
                 }
 
@@ -127,10 +199,18 @@ struct ContentView: View {
             .sheet(isPresented: $addingRecipient) {
                 AddRecipientView()
             }
+            .sheet(item: $recipientToEdit) { recipient in
+                EditRecipientView(recipient: recipient)
+            }
             .sheet(isPresented: $composing) {
                 ComposeView()
             }
             .sheet(isPresented: $decrypting) {
+                // Manual Decrypt button: no prefill — DecryptView's
+                // clipboard auto-detect handles the case where the
+                // user just copied an envelope from somewhere else.
+                // Universal-Link envelopes are presented at the
+                // ContentView root instead (see body), not via this sheet.
                 DecryptView()
             }
             .sheet(isPresented: $showingMyQR) {
@@ -191,7 +271,13 @@ struct ContentView: View {
 
     private func loadIdentity() async {
         do {
-            identity = try IdentityStore.loadOrCreate()
+            let loaded = try IdentityStore.loadOrCreate()
+            identity = loaded
+            // Hand the (possibly newly-generated, possibly migrated)
+            // identity to the recipients-sync coordinator so it can
+            // pull any blob iCloud Keychain has for us and start
+            // listening for changes to push back.
+            await recipientsSync.bind(identity: loaded)
         } catch {
             identityErrorMessage = "Couldn't set up your identity: \(error.localizedDescription)"
         }
@@ -203,6 +289,22 @@ struct ContentView: View {
         }
     }
 
+    /// Apply a drag-reorder. SwiftData has no intrinsic ordering, so we
+    /// materialise the new visual order and rewrite every row's
+    /// `orderIndex` to its position (0, 1, 2, …). Each touched row is
+    /// stamped with a fresh `updatedAt` so the sync merge propagates the
+    /// new order to the user's other devices (latest write wins).
+    private func moveRecipients(from source: IndexSet, to destination: Int) {
+        var reordered = recipients
+        reordered.move(fromOffsets: source, toOffset: destination)
+        let now = Date.now
+        for (position, recipient) in reordered.enumerated() where recipient.orderIndex != position {
+            recipient.orderIndex = position
+            recipient.updatedAt = now
+        }
+        try? modelContext.save()
+    }
+
     /// Wipe the keychain identity and all recipients, then re-trigger
     /// identity loading so a fresh keypair is generated and the user
     /// returns to the splash → main flow without restarting the app.
@@ -211,6 +313,12 @@ struct ContentView: View {
         // immediately while the wipe runs.
         identity = nil
         identityErrorMessage = nil
+        // Clear the synchronised recipients blob *before* wiping the
+        // identity — once the identity is gone, the coordinator can't
+        // re-derive the key. This also prevents the next run (with a
+        // fresh identity) from quietly silently reading stale ciphertext
+        // it can't decrypt anyway.
+        recipientsSync.wipeRemoteForReset()
         do {
             try IdentityStore.reset()
         } catch {
@@ -286,4 +394,5 @@ private struct RecipientRow: View {
 #Preview {
     ContentView()
         .modelContainer(for: Recipient.self, inMemory: true)
+        .environment(AppState())
 }

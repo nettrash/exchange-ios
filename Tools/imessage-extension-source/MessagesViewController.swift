@@ -117,7 +117,7 @@ class MessagesViewController: MSMessagesAppViewController {
         // If a message is currently selected, decrypt path. Otherwise compose.
         if let selected = conversation.selectedMessage,
            let url = selected.url,
-           let envelope = MessagesEnvelopeURL.extract(from: url) {
+           let envelope = EnvelopeURL.extract(from: url) {
             tryDecrypt(envelope: envelope, identity: identity)
         } else {
             await loadComposeRecipients()
@@ -187,7 +187,7 @@ class MessagesViewController: MSMessagesAppViewController {
         layout.caption = "🔒 Encrypted message"
         layout.subcaption = "to \(recipientName)"
         message.layout = layout
-        message.url = MessagesEnvelopeURL.url(for: envelope)
+        message.url = EnvelopeURL.url(for: envelope)
         message.summaryText = "🔒 Encrypted Exchange message — install Exchange to read"
 
         // Capture self into a separate weak reference inside the Task
@@ -238,53 +238,5 @@ class MessagesViewController: MSMessagesAppViewController {
     }
 }
 
-// MARK: - URL <-> envelope encoding
-
-/// Each MSMessage carries our envelope as its URL. We use a stable
-/// host/path so anyone who taps the bubble in a non-Exchange context
-/// just gets a 404 (the URL is purely a data carrier — iMessage never
-/// actually navigates to it on devices that have Exchange installed).
-///
-/// We base64url the envelope body so it survives URL parsing without
-/// percent-encoding surprises (`+` and `/` from standard base64 would
-/// otherwise need escaping).
-enum MessagesEnvelopeURL {
-    static let scheme = "https"
-    static let host = "exchange.nettrash.me"
-    static let path = "/msg"
-
-    static func url(for envelope: String) -> URL? {
-        let prefix = CryptoEnvelope.prefix
-        guard envelope.hasPrefix(prefix) else { return nil }
-        let body = String(envelope.dropFirst(prefix.count))
-        let urlSafe = body
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-
-        var components = URLComponents()
-        components.scheme = scheme
-        components.host = host
-        components.path = path
-        components.queryItems = [
-            URLQueryItem(name: "v", value: "2"),
-            URLQueryItem(name: "p", value: urlSafe),
-        ]
-        return components.url
-    }
-
-    static func extract(from url: URL) -> String? {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.host == host,
-              let payload = components.queryItems?.first(where: { $0.name == "p" })?.value else {
-            return nil
-        }
-        let standardBase64 = payload
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        // Re-add base64 padding (multiple of 4).
-        let padding = (4 - standardBase64.count % 4) % 4
-        let padded = standardBase64 + String(repeating: "=", count: padding)
-        return CryptoEnvelope.prefix + padded
-    }
-}
+// URL ↔ envelope encoding lives in shared Crypto/EnvelopeURL.swift so
+// both this extension and the main app's DecryptView can use it.

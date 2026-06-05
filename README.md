@@ -65,20 +65,27 @@ Exchange/                 main app target (iOS 26+)
 ├── AppConstants.swift    App Group identifier, keychain group, URLs
 ├── Crypto/
 │   ├── Identity.swift    Curve25519 ECDH + Ed25519 signing keypair
-│   └── CryptoEnvelope.swift   seal / open / EXC2 binary layout
+│   ├── CryptoEnvelope.swift       seal / open / EXC2 binary layout
+│   ├── EnvelopeURL.swift          EXC2 ↔ exchange.nettrash.me/msg URL codec
+│   ├── IdentityBackup.swift       passphrase-encrypted EXCBKP1 backup format
+│   ├── IdentityTransferQR.swift   one-shot EXCQR1 QR transfer format
+│   └── RecipientsSync.swift       encrypted recipients blob for iCloud Keychain sync
 ├── Models/
 │   └── Recipient.swift   @Model: display name, public bundle, fingerprint
 ├── Storage/
-│   └── KeychainStore.swift   Keychain Services wrapper, this-device-only
+│   ├── KeychainStore.swift                Keychain Services wrapper, sync- or device-only
+│   └── RecipientsSyncCoordinator.swift    pull/push debounce + merge for recipient sync
 ├── Extensions/
 │   └── Data+Hex.swift    hex / grouped-hex helpers for fingerprints
 ├── Views/
-│   ├── ComposeView.swift     pick recipient, type, encrypt, share
+│   ├── ComposeView.swift     pick recipient, type, encrypt, share as URL
 │   ├── DecryptView.swift     paste, verify signature, show plaintext
 │   ├── AddRecipientView.swift   paste or QR-scan a public-key bundle
 │   ├── MyIdentityQRView.swift   render local public bundle as QR
+│   ├── ExportIdentityView.swift / ImportIdentityView.swift   passphrase backup
+│   ├── ShowIdentityQRTransferView.swift / ScanIdentityQRTransferView.swift   in-person identity QR
 │   ├── QRCodeView.swift / QRScannerView.swift   CIFilter + AVCaptureSession
-│   └── SettingsView.swift    version, links, Reset identity
+│   └── SettingsView.swift    iCloud-Keychain toggle, backup, links, Reset identity
 ├── Assets.xcassets/      AppIcon (light/dark/tinted), LaunchIcon, LaunchBackground
 ├── Info.plist            UILaunchScreen, NSCameraUsageDescription
 ├── Exchange.entitlements App Group, keychain-access-groups
@@ -138,7 +145,11 @@ Or run from inside Xcode (`⌘U`). Approximately 16 tests cover round-trip on sh
 
 ## Privacy
 
-No data leaves the device unless the user explicitly Shares an encrypted envelope to another app. The app makes zero outbound network requests on its own. Identity private keys live in the iOS Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, which the OS itself blocks from iCloud Keychain sync and device-to-device migration. The recipient list lives in a SwiftData container inside an App Group local to the device. CloudKit is explicitly disabled on the `ModelConfiguration`.
+No data leaves the device unless the user explicitly Shares an encrypted envelope to another app, or chooses to use one of the v1.1 backup / transfer flows. The app makes zero outbound network requests on its own.
+
+Identity private keys live in the iOS Keychain. **As of v1.1 the default storage mode is `kSecAttrAccessibleAfterFirstUnlock` with `kSecAttrSynchronizable: true`,** which lets iCloud Keychain carry the keys across the user's same-Apple-ID devices (iCloud Keychain is itself end-to-end encrypted with a device-class secret). The Settings → Identity sync toggle flips this back to `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` for users who prefer the v1.0 device-bound behaviour. v1.0 installs auto-migrate to the v1.1 default on first launch — see `IdentityStore.loadOrCreate`. The user can also export the identity as a passphrase-encrypted blob (`EXCBKP1`, PBKDF2 + ChaCha20-Poly1305) or transfer it in person via QR (`EXCQR1`, ChaCha20-Poly1305 with the symmetric key embedded in the QR).
+
+The recipient list lives in a SwiftData container inside an App Group local to the device. CloudKit is explicitly disabled on the `ModelConfiguration`. **As of v1.1 the recipient list also syncs across the user's devices** via a separate Synchronizable Keychain item containing the entire list encrypted with a key derived from the identity's encryption private key (HKDF-SHA256 → ChaCha20-Poly1305). Apple sees ciphertext only — display names, notes, public keys are end-to-end encrypted between the user's devices, regardless of Advanced Data Protection. `RecipientsSyncCoordinator` listens for SwiftData saves, debounces ~500 ms, and pushes whole-list snapshots; on launch and on app-foreground it pulls the remote blob and merges by inserting unknown recipients and deleting locally-absent recipients whose `createdAt` predates the blob's `lastWriteAt`. Toggle in Settings → Recipients sync.
 
 `PrivacyInfo.xcprivacy` in both the main app and the iMessage extension declares `NSPrivacyTracking = false`, no tracking domains, no collected data types, and no `NSPrivacyAccessedAPITypes`.
 
