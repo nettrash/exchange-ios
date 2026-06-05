@@ -28,8 +28,16 @@ End-to-end. On your device.
 
 ## Promotional Text (max 170 chars, editable post-release)
 
+Evergreen (default):
+
 ```
 Encrypt messages on your device, share them through any messenger you already use, and decrypt back. No servers, no accounts, no tracking. Your keys stay yours.
+```
+
+For the 1.2 submission (leads with the new recipient management):
+
+```
+New in 1.2: rename and reorder your saved recipients. Encrypt on your device, send through any messenger, decrypt back. No servers, no accounts, no tracking.
 ```
 
 ## Keywords (max 100 chars, comma-separated, no spaces)
@@ -103,6 +111,16 @@ Mac Catalyst, multi-device identity and recipients, smoother taps.
 • Backup & transfer: Settings → Backup & transfer adds passphrase-encrypted Export / Import (paste-friendly) and one-shot Send / Receive via QR (in-person between two of your own devices).
 • Smoother launch from a tapped link — the splash transitions straight to the decrypted message, with no home-screen flash in between.
 • Auto-detects encrypted envelopes already on your clipboard when you open Decrypt.
+```
+
+For v1.2:
+
+```
+Manage your recipient list.
+
+• Rename: tap a recipient (or right-click on Mac) to edit its display name and notes. The key identity behind it never changes.
+• Reorder: tap Edit and drag recipients into the order you want.
+• Your names and order sync across iPhone and Mac and are included in encrypted backups.
 ```
 
 For future updates, keep these short and concrete: "Fixed [bug]. Added [small thing]. Improved [thing]."
