@@ -4,6 +4,43 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Exchange uses the camera to scan a contact's public key from a QR code so you can send them encrypted messages.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Exchange uses Face ID to unlock the app so only you can read and send your encrypted messages.</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Exchange encrypted file</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>me.nettrash.exchange.exc2</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>me.nettrash.exchange.exc2</string>
+			<key>UTTypeDescription</key>
+			<string>Exchange encrypted file</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>exc2</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

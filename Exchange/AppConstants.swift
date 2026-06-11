@@ -33,4 +33,28 @@ nonisolated enum AppConstants {
     /// same content. Update both endpoints once they're hosted.
     static let privacyPolicyURL = URL(string: "https://nettrash.me/appstore/exchange/privacy.html")!
     static let supportURL = URL(string: "https://nettrash.me/appstore/exchange/support.html")!
+
+    // MARK: - Last chosen recipient (Compose pre-selection)
+
+    /// App Group defaults used for small cross-target UI state. Lives in
+    /// the App Group (not standard defaults) so the main app's Compose
+    /// screen and the iMessage extension's compose form pre-select the
+    /// same person — picking a recipient in one is remembered in the other.
+    private static let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier)
+    private static let lastRecipientIDKey = "lastSelectedRecipientID"
+
+    /// Remember the recipient the user most recently composed to, so the
+    /// next Compose pre-selects them instead of resetting to the top of
+    /// the list. Stored as the `Recipient.id` UUID string.
+    static func saveLastRecipientID(_ id: UUID) {
+        sharedDefaults?.set(id.uuidString, forKey: lastRecipientIDKey)
+    }
+
+    /// The last recipient the user composed to, or nil if there isn't one
+    /// yet (or it was stored as an unparseable value). Callers must still
+    /// confirm the id matches a recipient that currently exists.
+    static func loadLastRecipientID() -> UUID? {
+        guard let raw = sharedDefaults?.string(forKey: lastRecipientIDKey) else { return nil }
+        return UUID(uuidString: raw)
+    }
 }

@@ -16,7 +16,14 @@ import UIKit
 
 struct ComposeView: View {
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: [SortDescriptor(\Recipient.displayName)])
+    // Same order as the home screen: manual drag-order first
+    // (`orderIndex`), then newest-first as the tie-break. The picker used
+    // to sort alphabetically, which didn't match what the user sees on the
+    // main list.
+    @Query(sort: [
+        SortDescriptor(\Recipient.orderIndex, order: .forward),
+        SortDescriptor(\Recipient.createdAt, order: .reverse),
+    ])
     private var recipients: [Recipient]
 
     @State private var identity: Identity?
@@ -26,6 +33,15 @@ struct ComposeView: View {
     @State private var plaintext: String = ""
     @State private var envelope: String?
     @State private var errorMessage: String?
+
+    /// Preferred representation for Copy / Share in the result view — the
+    /// rich `exchange.nettrash.me/msg` link or the raw `EXC2:` envelope.
+    /// Persisted so the choice sticks across messages.
+    @AppStorage("compose.shareFormat") private var shareFormat: MessageShareFormat = .link
+
+    /// Focus of the message editor. Lets the keyboard's Done button dismiss
+    /// it so the "Encrypt & sign" button below isn't hidden by the keyboard.
+    @FocusState private var messageFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -55,9 +71,27 @@ struct ComposeView: View {
         .task {
             await loadIdentity()
             if selectedRecipient == nil {
-                selectedRecipient = recipients.first
+                selectedRecipient = preferredInitialRecipient()
             }
         }
+        // Remember the chosen recipient so the next Compose (here or in the
+        // iMessage extension) pre-selects them.
+        .onChange(of: selectedRecipient) { _, newValue in
+            if let id = newValue?.id {
+                AppConstants.saveLastRecipientID(id)
+            }
+        }
+    }
+
+    /// The recipient to pre-select when Compose opens: the one the user
+    /// last composed to if they still exist, otherwise the first row in
+    /// the list (which now matches the home-screen order).
+    private func preferredInitialRecipient() -> Recipient? {
+        if let id = AppConstants.loadLastRecipientID(),
+           let match = recipients.first(where: { $0.id == id }) {
+            return match
+        }
+        return recipients.first
     }
 
     // MARK: - Sub-views
@@ -90,6 +124,7 @@ struct ComposeView: View {
             Section {
                 TextEditor(text: $plaintext)
                     .frame(minHeight: 160)
+                    .focused($messageFocused)
             } header: {
                 Text("Message")
             } footer: {
@@ -111,34 +146,61 @@ struct ComposeView: View {
                 .disabled(selectedRecipient == nil || plaintext.isEmpty)
             }
         }
+        // Keep the "Encrypt & sign" button reachable while the keyboard is
+        // up: swipe to dismiss interactively, or tap Done on the keyboard
+        // toolbar. Without this the button sits hidden behind the keyboard.
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { messageFocused = false }
+            }
+        }
     }
 
     @ViewBuilder
     private func resultView(envelope: String) -> some View {
-        // Wrap the envelope in its URL form so Copy and Share hand off
-        // a real `https://exchange.nettrash.me/msg?...` link. That's what
-        // makes iMessage (and Telegram, Slack, etc.) render a rich
-        // 🔒 Encrypted message preview bubble instead of a wall of
-        // base64. The URL is also what Universal Links resolves on the
-        // recipient side to open Exchange directly.
+        // The sealed envelope can be shared two ways (user's choice, which
+        // we persist):
+        //   • Link — wrapped as `https://exchange.nettrash.me/msg?...`,
+        //     which makes iMessage / Telegram / Slack render a rich 🔒
+        //     preview bubble and resolves via Universal Links to open
+        //     Exchange directly on the recipient's side.
+        //   • EXC2 — the raw `EXC2:<base64>` envelope, for plain-text
+        //     channels or recipients who'd rather paste the blob.
         //
-        // `EnvelopeURL.url(for:)` only returns nil for input that
-        // doesn't start with `EXC2:`, which CryptoEnvelope.seal never
-        // produces — so the fallback to the raw envelope is purely
-        // defensive.
+        // `EnvelopeURL.url(for:)` only returns nil for input lacking the
+        // `EXC2:` prefix, which CryptoEnvelope.seal never produces — so the
+        // fallback to the raw envelope is purely defensive.
         let url = EnvelopeURL.url(for: envelope)
-        let shareableString = url?.absoluteString ?? envelope
+        let usingLink = shareFormat == .link && url != nil
+        let shareableString = usingLink ? url!.absoluteString : envelope
 
         Form {
+            Section {
+                Picker("Format", selection: $shareFormat) {
+                    ForEach(MessageShareFormat.allCases) { format in
+                        Text(format.label).tag(format)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Format")
+            } footer: {
+                Text(usingLink
+                     ? "A link that opens Exchange and decrypts in place — shows a 🔒 preview in iMessage and most messengers."
+                     : "The raw EXC2: envelope — paste it into any text channel.")
+            }
+
             Section {
                 Text(shareableString)
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .lineLimit(nil)
             } header: {
-                Text(url == nil ? "Encrypted envelope" : "Encrypted message link")
+                Text(usingLink ? "Encrypted message link" : "Encrypted envelope (EXC2)")
             } footer: {
-                Text("Send this through any messenger — iMessage, Mail, Telegram, WhatsApp. Only \(selectedRecipient?.displayName ?? "the recipient") can read it, and they can verify it came from you. In iMessage it shows up as a 🔒 Encrypted message preview; tapping it opens Exchange and decrypts in place.")
+                Text("Send this through any messenger — iMessage, Mail, Telegram, WhatsApp. Only \(selectedRecipient?.displayName ?? "the recipient") can read it, and they can verify it came from you.")
             }
 
             Section {
@@ -148,16 +210,16 @@ struct ComposeView: View {
                     Label("Copy to clipboard", systemImage: "doc.on.doc")
                 }
 
-                // Share as a URL value (not a String) — that's the
-                // signal the share sheet uses to route into the
-                // link-preview path inside Messages. Sharing the same
-                // text as a String drops it as a plain-text bubble.
-                if let url {
+                // Share a URL *value* (not a String) for the link form —
+                // that's the signal the share sheet uses to route into the
+                // link-preview path inside Messages. The EXC2 form shares
+                // as plain text.
+                if usingLink, let url {
                     ShareLink(item: url) {
                         Label("Share…", systemImage: "square.and.arrow.up")
                     }
                 } else {
-                    ShareLink(item: envelope) {
+                    ShareLink(item: shareableString) {
                         Label("Share…", systemImage: "square.and.arrow.up")
                     }
                 }
@@ -199,6 +261,23 @@ struct ComposeView: View {
             errorMessage = nil
         } catch {
             errorMessage = "Couldn't encrypt: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// How a sealed message is handed off from the result view.
+enum MessageShareFormat: String, CaseIterable, Identifiable {
+    /// `https://exchange.nettrash.me/msg?...` — rich preview + Universal Link.
+    case link
+    /// Raw `EXC2:<base64>` envelope.
+    case envelope
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .link:     return "Link"
+        case .envelope: return "EXC2"
         }
     }
 }

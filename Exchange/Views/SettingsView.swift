@@ -44,6 +44,12 @@ struct SettingsView: View {
     @State private var syncEnabled: Bool?
     @State private var syncToggleErrorMessage: String?
 
+    // App-lock settings, seeded from AppLockSettings and written straight
+    // back through it on each change.
+    @State private var appLockEnabled = AppLockSettings.isEnabled
+    @State private var relockTimeout = AppLockSettings.relockTimeout
+    @State private var lockCoversIncoming = AppLockSettings.coversIncoming
+
     var body: some View {
         NavigationStack {
             Form {
@@ -59,6 +65,8 @@ struct SettingsView: View {
                 identitySyncSection
 
                 recipientsSyncSection
+
+                appLockSection
 
                 Section {
                     Button {
@@ -183,6 +191,45 @@ struct SettingsView: View {
             Text("Identity sync")
         } footer: {
             Text("When on, your identity is carried across the devices signed into your Apple ID via iCloud Keychain (which is itself end-to-end encrypted). This lets iPhone and Mac share one identity, and a new device picks it up automatically. Turn off to keep the private key pinned to this device only — anything encrypted to your old key on a lost device stays unreadable, but you'll generate a fresh identity on each install.")
+        }
+    }
+
+    // MARK: - App-lock section
+
+    @ViewBuilder
+    private var appLockSection: some View {
+        Section {
+            Toggle("Require \(BiometricAuth.biometryLabel())", isOn: Binding(
+                get: { appLockEnabled },
+                set: { newValue in
+                    appLockEnabled = newValue
+                    AppLockSettings.isEnabled = newValue
+                }
+            ))
+            if appLockEnabled {
+                Picker("Re-lock", selection: Binding(
+                    get: { relockTimeout },
+                    set: { newValue in
+                        relockTimeout = newValue
+                        AppLockSettings.relockTimeout = newValue
+                    }
+                )) {
+                    ForEach(AppLockTimeout.allCases) { timeout in
+                        Text(timeout.label).tag(timeout)
+                    }
+                }
+                Toggle("Also lock message links & iMessage", isOn: Binding(
+                    get: { lockCoversIncoming },
+                    set: { newValue in
+                        lockCoversIncoming = newValue
+                        AppLockSettings.coversIncoming = newValue
+                    }
+                ))
+            }
+        } header: {
+            Text("App lock")
+        } footer: {
+            Text("When on, Exchange asks for \(BiometricAuth.biometryLabel()) (or your device passcode) before opening. “Re-lock” sets how long the app can be in the background before it locks again. “Also lock message links & iMessage” extends the lock to opening a shared message link and to the iMessage app — not just the main app. This is a convenience lock; your keys stay protected by the system Keychain regardless.")
         }
     }
 

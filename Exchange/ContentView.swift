@@ -17,6 +17,7 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppState.self) private var appState
     @Environment(RecipientsSyncCoordinator.self) private var recipientsSync
+    @Environment(\.scenePhase) private var scenePhase
     // Manual order first (drag-to-reorder), then newest-first as the
     // tie-break so rows that have never been reordered keep their old
     // ordering.
@@ -40,9 +41,24 @@ struct ContentView: View {
     @State private var addingRecipient = false
     @State private var showingMyQR = false
     @State private var showingSettings = false
+    @State private var encryptingFile = false
+    @State private var decryptingFile = false
     /// The recipient currently being renamed, if any. Drives the
     /// EditRecipientView sheet.
     @State private var recipientToEdit: Recipient?
+
+    // MARK: App lock
+
+    /// Whether the biometric/passcode lock is currently engaged. Starts
+    /// locked on a cold launch when the lock is enabled; re-locked on
+    /// foreground per `AppLockSettings.relockTimeout`. See `lockView`.
+    @State private var isLocked = AppLockSettings.isEnabled
+    /// When the app most recently went to the background, used to decide
+    /// whether enough time has passed to re-lock on return.
+    @State private var lastBackgrounded: Date?
+    /// Guards against overlapping authentication prompts (the auto-prompt
+    /// on appear plus a manual Unlock tap).
+    @State private var authInProgress = false
 
     /// How long the splash stays up at minimum, regardless of how fast
     /// identity loading completes. Picked to give the rotating arc a
@@ -51,7 +67,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let identity {
+            if shouldShowLock {
+                lockView
+            } else if let identity {
                 if let envelope = appState.pendingDecryptEnvelope {
                     // Universal-Link launch (or a URL arriving while
                     // the app was in the background): render DecryptView
@@ -94,6 +112,10 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25),
                    value: appState.pendingDecryptEnvelope)
+        .animation(.easeInOut(duration: 0.2), value: isLocked)
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhase(newPhase)
+        }
         .task {
             // Run identity loading and the minimum splash delay in parallel;
             // we only fall through once whichever finishes last is done.
@@ -111,6 +133,84 @@ struct ContentView: View {
                 await identityWork
             }
             minimumSplashElapsed = true
+        }
+    }
+
+    // MARK: - App lock
+
+    /// Whether to cover the UI with the lock screen right now. Honours the
+    /// master switch, the device's ability to authenticate (fail open if
+    /// there's no biometric/passcode, so the user can't be locked out),
+    /// and the scope toggle: an incoming message-link presentation is only
+    /// gated when the user chose to cover incoming messages.
+    private var shouldShowLock: Bool {
+        guard isLocked,
+              AppLockSettings.isEnabled,
+              BiometricAuth.canAuthenticate() else { return false }
+        if appState.pendingDecryptEnvelope != nil && !AppLockSettings.coversIncoming {
+            return false
+        }
+        return true
+    }
+
+    /// Full-screen lock matching the splash visuals. Auto-prompts on
+    /// appear and offers a manual retry button.
+    private var lockView: some View {
+        ZStack {
+            Color("LaunchBackground")
+                .ignoresSafeArea()
+            VStack(spacing: 28) {
+                Image("LaunchIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 120, height: 120)
+                Text("Exchange is locked")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Button {
+                    Task { await attemptUnlock() }
+                } label: {
+                    Label("Unlock with \(BiometricAuth.biometryLabel())", systemImage: "lock.open.fill")
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white.opacity(0.18))
+                .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 32)
+        }
+        .preferredColorScheme(.dark)
+        .task { await attemptUnlock() }
+    }
+
+    private func attemptUnlock() async {
+        guard !authInProgress else { return }
+        authInProgress = true
+        defer { authInProgress = false }
+        let ok = await BiometricAuth.authenticate(
+            reason: "Unlock Exchange to read and send your encrypted messages."
+        )
+        if ok { isLocked = false }
+    }
+
+    /// Track background/foreground transitions to drive re-locking. We key
+    /// the timestamp off `.background` (not `.inactive`) so the biometric
+    /// prompt itself — which only makes the app inactive — doesn't trip an
+    /// immediate re-lock loop.
+    private func handleScenePhase(_ phase: ScenePhase) {
+        guard AppLockSettings.isEnabled else { return }
+        switch phase {
+        case .background:
+            if lastBackgrounded == nil { lastBackgrounded = Date.now }
+        case .active:
+            if let last = lastBackgrounded,
+               let interval = AppLockSettings.relockTimeout.interval,
+               Date.now.timeIntervalSince(last) >= interval {
+                isLocked = true
+            }
+            lastBackgrounded = nil
+        default:
+            break
         }
     }
 
@@ -195,6 +295,25 @@ struct ContentView: View {
                         Label("Add recipient", systemImage: "plus")
                     }
                 }
+
+                // File encryption/decryption tucked into an overflow menu
+                // so the main bar stays focused on the text-message flow.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            encryptingFile = true
+                        } label: {
+                            Label("Encrypt file", systemImage: "doc.badge.plus")
+                        }
+                        Button {
+                            decryptingFile = true
+                        } label: {
+                            Label("Decrypt file", systemImage: "doc.badge.gearshape")
+                        }
+                    } label: {
+                        Label("Files", systemImage: "ellipsis.circle")
+                    }
+                }
             }
             .sheet(isPresented: $addingRecipient) {
                 AddRecipientView()
@@ -212,6 +331,22 @@ struct ContentView: View {
                 // Universal-Link envelopes are presented at the
                 // ContentView root instead (see body), not via this sheet.
                 DecryptView()
+            }
+            .sheet(isPresented: $encryptingFile) {
+                EncryptFileView()
+            }
+            .sheet(isPresented: $decryptingFile) {
+                DecryptFileView()
+            }
+            // A `.exc2` opened from another app ("Open in Exchange").
+            .sheet(item: Binding(
+                get: { appState.pendingDecryptFileURL.map { IdentifiableURL(url: $0) } },
+                set: { appState.pendingDecryptFileURL = $0?.url }
+            )) { item in
+                DecryptFileView(
+                    incomingFileURL: item.url,
+                    onDone: { appState.pendingDecryptFileURL = nil }
+                )
             }
             .sheet(isPresented: $showingMyQR) {
                 MyIdentityQRView(identity: identity)

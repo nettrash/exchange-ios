@@ -33,6 +33,11 @@ class MessagesViewController: MSMessagesAppViewController {
     private var hostingController: UIHostingController<MessagesView>?
     private var modelContainer: ModelContainer?
 
+    /// Envelope awaiting decryption behind the app lock (set when the user
+    /// enabled the lock with "cover incoming"). Opened in the main app via
+    /// `openInApp`, where the unlock + decryption actually happen.
+    private var pendingLockedEnvelope: String?
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -84,6 +89,9 @@ class MessagesViewController: MSMessagesAppViewController {
             onDone: { [weak self] in
                 self?.dismiss()
             },
+            onOpenInApp: { [weak self] in
+                self?.openInApp()
+            },
             modelContainer: modelContainer
         )
         let hosting = UIHostingController(rootView: view)
@@ -118,11 +126,41 @@ class MessagesViewController: MSMessagesAppViewController {
         if let selected = conversation.selectedMessage,
            let url = selected.url,
            let envelope = EnvelopeURL.extract(from: url) {
-            tryDecrypt(envelope: envelope, identity: identity)
+            // The lock card and the decrypted message are centred views that
+            // need room the compact strip doesn't have — that's why tapping a
+            // bubble sometimes showed an empty/clipped sheet. Expand first so
+            // the content is always visible. (Requesting expanded re-enters
+            // refreshState via willTransition; the guard stops a loop.)
+            if presentationStyle == .compact {
+                requestPresentationStyle(.expanded)
+            }
+            // Honour the app lock when enabled and scoped to cover incoming
+            // messages. Fail open if the device can't authenticate (no
+            // biometrics/passcode) so a message is never permanently
+            // unreadable here.
+            if AppLockSettings.isEnabled,
+               AppLockSettings.coversIncoming,
+               BiometricAuth.canAuthenticate() {
+                pendingLockedEnvelope = envelope
+                model.state = .locked
+            } else {
+                tryDecrypt(envelope: envelope, identity: identity)
+            }
         } else {
             await loadComposeRecipients()
             model.state = .compose
         }
+    }
+
+    /// Open the locked message in the main Exchange app via its Universal
+    /// Link, where the app-lock prompt (Face ID / passcode) and decryption
+    /// run. Biometric prompts aren't reliable inside the iMessage compose
+    /// strip, so we hand off rather than authenticating here.
+    @MainActor
+    private func openInApp() {
+        guard let envelope = pendingLockedEnvelope,
+              let url = EnvelopeURL.url(for: envelope) else { return }
+        extensionContext?.open(url, completionHandler: nil)
     }
 
     @MainActor
@@ -132,7 +170,12 @@ class MessagesViewController: MSMessagesAppViewController {
             return
         }
         let context = ModelContext(modelContainer)
-        let descriptor = FetchDescriptor<Recipient>(sortBy: [SortDescriptor(\.displayName)])
+        // Match the main app's home-screen order: manual drag-order first,
+        // then newest-first as the tie-break (rather than alphabetical).
+        let descriptor = FetchDescriptor<Recipient>(sortBy: [
+            SortDescriptor(\.orderIndex, order: .forward),
+            SortDescriptor(\.createdAt, order: .reverse),
+        ])
         let recipients = (try? context.fetch(descriptor)) ?? []
         // Snapshot to plain values so the SwiftUI view doesn't depend on
         // the @Model object's lifecycle.

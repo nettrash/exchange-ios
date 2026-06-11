@@ -63,6 +63,7 @@ struct RecipientSnapshot: Identifiable, Hashable {
 final class MessagesAppModel {
     enum State: Equatable {
         case loading
+        case locked
         case compose
         case decryptedPlaintext(text: String, sender: SenderDisplay)
         case decryptedBinary(byteCount: Int, sender: SenderDisplay)
@@ -81,6 +82,7 @@ struct MessagesView: View {
     let onSend: (_ envelope: String, _ recipientName: String) -> Void
     let onRequestExpand: () -> Void
     let onDone: () -> Void
+    let onOpenInApp: () -> Void
     let modelContainer: ModelContainer?
 
     var body: some View {
@@ -88,6 +90,8 @@ struct MessagesView: View {
             switch model.state {
             case .loading:
                 loadingView
+            case .locked:
+                LockedView(onOpenInApp: onOpenInApp)
             case .compose:
                 ComposeForm(
                     recipients: model.recipients,
@@ -191,13 +195,31 @@ private struct ComposeForm: View {
         }
         .onAppear {
             if selectedRecipientID == nil {
-                selectedRecipientID = recipients.first?.id
+                selectedRecipientID = preferredInitialRecipientID()
+            }
+        }
+        // Remember the chosen recipient (shared with the main app) so the
+        // next compose pre-selects them.
+        .onChange(of: selectedRecipientID) { _, newValue in
+            if let id = newValue {
+                AppConstants.saveLastRecipientID(id)
             }
         }
     }
 
     private var selected: RecipientSnapshot? {
         recipients.first { $0.id == selectedRecipientID }
+    }
+
+    /// Pre-select the recipient the user last composed to (in this
+    /// extension or the main app) if they're still in the list, otherwise
+    /// the first row — which now matches the main app's ordering.
+    private func preferredInitialRecipientID() -> UUID? {
+        if let id = AppConstants.loadLastRecipientID(),
+           recipients.contains(where: { $0.id == id }) {
+            return id
+        }
+        return recipients.first?.id
     }
 
     private var canSend: Bool {
@@ -274,6 +296,39 @@ private struct DecryptResult: View {
         case .fingerprint(let hex):
             Text("Signature verified, but the sender's signing key (fingerprint \(hex)) doesn't match anyone in your recipients. Add them in the Exchange app to confirm their identity.")
         }
+    }
+}
+
+// MARK: - Locked
+
+/// Shown before a decrypted message when the user has enabled the app
+/// lock with "cover incoming". Biometric prompts can't present reliably
+/// inside the iMessage compose strip, so instead of authenticating here
+/// we hand the message off to the main Exchange app (via its Universal
+/// Link), where the lock + decryption run.
+private struct LockedView: View {
+    let onOpenInApp: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("Locked")
+                .font(.headline)
+            Text("Open Exchange to unlock and read this message.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                onOpenInApp()
+            } label: {
+                Label("Open in Exchange", systemImage: "arrow.up.forward.app")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
     }
 }
 

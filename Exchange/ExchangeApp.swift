@@ -59,10 +59,16 @@ struct ExchangeApp: App {
                         .environment(appState)
                         .environment(recipientsSync)
                         .onOpenURL { url in
-                            // Universal Link arrived (e.g. Exchange bubble
-                            // tapped in Messages.app on Mac, or any other
-                            // app surfacing our exchange.nettrash.me/msg
-                            // URL). Extract the envelope and stash it for
+                            // A `.exc2` file opened "with Exchange" arrives as
+                            // a file URL — route it to DecryptFileView.
+                            if url.isFileURL {
+                                appState.pendingDecryptFileURL = url
+                                return
+                            }
+                            // Otherwise a Universal Link (e.g. Exchange bubble
+                            // tapped in Messages.app on Mac, or any app
+                            // surfacing our exchange.nettrash.me/msg URL).
+                            // Extract the envelope and stash it for
                             // ContentView to pick up; ContentView auto-
                             // presents DecryptView pre-filled.
                             if let envelope = EnvelopeURL.extract(from: url) {
